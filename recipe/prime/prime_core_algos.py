@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import numpy as np
 import torch
 
 import verl
 import verl.utils.torch_functional as verl_F
+from verl.trainer.ppo.core_algos import compute_grpo_outcome_advantage
 
 
 def compute_rloo_advantage_return(data: verl.DataProto, response_mask: torch.Tensor, n_samples, config):
@@ -68,6 +70,46 @@ def compute_rloo_advantage_return(data: verl.DataProto, response_mask: torch.Ten
 
         advantages = returns.clone()
         advantages = verl_F.masked_whiten(advantages, response_mask)
+
+        return advantages, returns
+
+
+def compute_grpo_advantage_return(data: verl.DataProto, response_mask: torch.Tensor, n_samples, config):
+    """Compute GRPO advantage for PRIME."""
+    reward_tensors = []
+
+    with torch.no_grad():
+        if "rm_scores" in data.batch.keys() and config.algorithm.reward_dpo_coef != 0.0:
+            reward_tensor = data.batch["rm_scores"]
+            reward_tensors.append(reward_tensor * config.algorithm.reward_dpo_coef)
+
+        if "acc" in data.batch.keys() and config.algorithm.reward_gt_coef != 0.0:
+            reward_tensor = torch.zeros_like(response_mask, dtype=torch.float32)
+
+            prompt_ids = data.batch["prompts"]
+            prompt_length = prompt_ids.shape[-1]
+            valid_response_length = data.batch["attention_mask"][:, prompt_length:].sum(-1)
+
+            reward_tensor[
+                torch.arange(0, valid_response_length.shape[0], dtype=torch.long, device=valid_response_length.device),
+                valid_response_length - 1,
+            ] = data.batch["acc"]
+
+            reward_tensors.append(reward_tensor * config.algorithm.reward_gt_coef)
+
+        final_reward_tensor = sum(reward_tensors)
+
+        # prepare group index for compute_grpo_outcome_advantage
+        bsz = final_reward_tensor.shape[0]
+        index = np.repeat(np.arange(0, bsz // n_samples), n_samples)
+
+        norm_adv_by_std_in_grpo = config.algorithm.get("norm_adv_by_std_in_grpo", True)
+        advantages, returns = compute_grpo_outcome_advantage(
+            token_level_rewards=final_reward_tensor,
+            response_mask=response_mask,
+            index=index,
+            norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+        )
 
         return advantages, returns
 
