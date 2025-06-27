@@ -40,16 +40,30 @@ from . import prime_core_algos
 
 
 def compute_advantage(data: DataProto, adv_estimator, config):
+    responses = data.batch["responses"]
+    response_length = responses.size(-1)
+    attention_mask = data.batch["attention_mask"]
+    response_mask = attention_mask[:, -response_length:]
+
     if adv_estimator == "rloo":
-        responses = data.batch["responses"]
-        response_length = responses.size(-1)
-        attention_mask = data.batch["attention_mask"]
-        response_mask = attention_mask[:, -response_length:]
-        advantages, returns = prime_core_algos.compute_rloo_advantage_return(data, response_mask, config.actor_rollout_ref.rollout.n, config)
-        data.batch["advantages"] = advantages
-        data.batch["returns"] = returns
+        advantages, returns = prime_core_algos.compute_rloo_advantage_return(
+            data,
+            response_mask,
+            config.actor_rollout_ref.rollout.n,
+            config,
+        )
+    elif adv_estimator == "grpo":
+        advantages, returns = prime_core_algos.compute_grpo_advantage_return(
+            data,
+            response_mask,
+            config.actor_rollout_ref.rollout.n,
+            config,
+        )
     else:
         raise NotImplementedError
+
+    data.batch["advantages"] = advantages
+    data.batch["returns"] = returns
     return data
 
 
