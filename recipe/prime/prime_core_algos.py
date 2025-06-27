@@ -72,6 +72,53 @@ def compute_rloo_advantage_return(data: verl.DataProto, response_mask: torch.Ten
         return advantages, returns
 
 
+def compute_grpo_advantage_return(
+    data: verl.DataProto,
+    response_mask: torch.Tensor,
+    n_samples: int,
+    config,
+):
+    """Compute GRPO-style advantage used in PRIME."""
+
+    reward_tensors = []
+
+    with torch.no_grad():
+        if "rm_scores" in data.batch.keys() and config.algorithm.reward_dpo_coef != 0.0:
+            reward_tensor = data.batch["rm_scores"] * response_mask
+            reward_tensors.append(reward_tensor * config.algorithm.reward_dpo_coef)
+
+        if "acc" in data.batch.keys() and config.algorithm.reward_gt_coef != 0.0:
+            reward_tensor = torch.zeros_like(response_mask, dtype=torch.float32)
+            prompt_ids = data.batch["prompts"]
+            prompt_length = prompt_ids.shape[-1]
+            valid_response_length = data.batch["attention_mask"][:, prompt_length:].sum(-1)
+
+            reward_tensor[
+                torch.arange(0, valid_response_length.shape[0], device=valid_response_length.device),
+                valid_response_length - 1,
+            ] = data.batch["acc"]
+            reward_tensors.append(reward_tensor * config.algorithm.reward_gt_coef)
+
+        final_reward_tensor = sum(reward_tensors)
+        sample_rewards = (final_reward_tensor * response_mask).sum(dim=-1)
+
+        advantages = torch.zeros_like(sample_rewards)
+        norm_adv = config.algorithm.get("norm_adv_by_std_in_grpo", True)
+        for start in range(0, sample_rewards.shape[0], n_samples):
+            group = sample_rewards[start : start + n_samples]
+            baseline = group.mean()
+            if norm_adv:
+                std = group.std()
+                advantages[start : start + n_samples] = (group - baseline) / (std + 1e-6)
+            else:
+                advantages[start : start + n_samples] = group - baseline
+
+        advantages = advantages.unsqueeze(-1) * response_mask
+        returns = advantages.clone()
+
+        return advantages, returns
+
+
 def compute_ce_dpo_loss_rm(token_level_scores, acc, response_mask, beta):
     cur_scores = ((token_level_scores * response_mask).sum(dim=1) * beta).sigmoid()
     cur_dpo_loss = torch.nn.functional.binary_cross_entropy(cur_scores, acc)
