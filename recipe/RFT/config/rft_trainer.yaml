@@ -1,0 +1,17 @@
+# Configuration for the RFT recipe. Overrides the default PPO trainer.
+
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+algorithm:
+  adv_estimator: rft
+  token_gate:
+    k_r: 10
+    k_H: 10
+    tau_r: 0.3
+    tau_H: 0.7
